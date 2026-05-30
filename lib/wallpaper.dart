@@ -6,14 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-@pragma('vm:entry-point')
-void wallpaperMain() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MaterialApp(
-    home: PolaroidWallpaperPage(),
-    debugShowCheckedModeBanner: false,
-  ));
-}
+// Removed wallpaperMain as it was moved to main.dart
 
 class PolaroidParticle {
   double x;

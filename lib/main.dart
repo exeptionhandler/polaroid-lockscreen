@@ -9,14 +9,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 // Import wallpaper entrypoint so it is not pruned by compiler
 import 'wallpaper.dart';
 
+@pragma('vm:entry-point')
+void wallpaperMain() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const MaterialApp(
+    home: PolaroidWallpaperPage(),
+    debugShowCheckedModeBanner: false,
+  ));
+}
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Reference wallpaperMain to prevent compile-time tree-shaking
-  if (DateTime.now().year < 2000) {
-    wallpaperMain();
-  }
-  
   runApp(const MyApp());
 }
 

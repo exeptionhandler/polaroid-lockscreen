@@ -26,18 +26,28 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
+            surfaceHolder?.setFormat(android.graphics.PixelFormat.TRANSPARENT)
 
             // Flutter initialization must happen on the Main Thread
             mainHandler.post {
                 val context = this@LiveWallpaperService
                 val flutterLoader = FlutterInjector.instance().flutterLoader()
-                if (!flutterLoader.didInit()) {
+                if (!flutterLoader.initialized()) {
                     flutterLoader.startInitialization(context)
                 }
                 flutterLoader.ensureInitializationComplete(context, null)
 
                 val engine = FlutterEngine(context)
                 flutterEngine = engine
+
+                // Register plugins manually since we instantiated FlutterEngine directly
+                try {
+                    Class.forName("io.flutter.plugins.GeneratedPluginRegistrant")
+                        .getDeclaredMethod("registerWith", FlutterEngine::class.java)
+                        .invoke(null, engine)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
 
                 // Connect the MethodChannel to communicate with Dart
                 methodChannel = MethodChannel(engine.dartExecutor.binaryMessenger, "com.stick.polaroid/wallpaper")
@@ -54,6 +64,13 @@ class LiveWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             super.onVisibilityChanged(visible)
             mainHandler.post {
+                flutterEngine?.let { engine ->
+                    if (visible) {
+                        engine.lifecycleChannel.appIsResumed()
+                    } else {
+                        engine.lifecycleChannel.appIsPaused()
+                    }
+                }
                 methodChannel?.invokeMethod("onVisibilityChanged", visible)
             }
         }
@@ -62,6 +79,7 @@ class LiveWallpaperService : WallpaperService() {
             super.onSurfaceCreated(holder)
             mainHandler.post {
                 flutterEngine?.let { engine ->
+                    engine.lifecycleChannel.appIsResumed()
                     engine.renderer.startRenderingToSurface(holder.surface, false)
                 }
             }
@@ -102,6 +120,7 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onDestroy() {
             mainHandler.post {
+                flutterEngine?.lifecycleChannel?.appIsDetached()
                 flutterEngine?.destroy()
                 flutterEngine = null
                 methodChannel = null

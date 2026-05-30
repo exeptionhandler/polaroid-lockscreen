@@ -21,3 +21,4 @@
 
 # Suppress warnings that might block the build
 -dontwarn io.flutter.embedding.android.**
+-dontwarn com.google.android.play.core.**
