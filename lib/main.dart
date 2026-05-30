@@ -33,7 +33,6 @@ class MyApp extends StatelessWidget {
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFFFF6B8B),
           secondary: Color(0xFFFFD166),
-          background: Color(0xFF0F0B1E),
           surface: Color(0xFF1E1735),
         ),
         useMaterial3: true,
@@ -45,7 +44,7 @@ class MyApp extends StatelessWidget {
 }
 
 class MainConfigPage extends StatefulWidget {
-  const MainConfigPage({Key? key}) : super(key: key);
+  const MainConfigPage({super.key});
 
   @override
   State<MainConfigPage> createState() => _MainConfigPageState();
@@ -56,6 +55,8 @@ class _MainConfigPageState extends State<MainConfigPage> {
   final ImagePicker _picker = ImagePicker();
   List<String> _imagePaths = [];
   bool _isLoading = true;
+  String _loveNote = 'Nuestros momentos más felices... ¡Te amo! ❤️';
+  final TextEditingController _loveNoteController = TextEditingController();
 
   @override
   void initState() {
@@ -63,9 +64,16 @@ class _MainConfigPageState extends State<MainConfigPage> {
     _loadSavedImages();
   }
 
+  @override
+  void dispose() {
+    _loveNoteController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadSavedImages() async {
     final prefs = await SharedPreferences.getInstance();
     final paths = prefs.getStringList('selected_images') ?? [];
+    final loveNote = prefs.getString('love_note') ?? 'Nuestros momentos más felices... ¡Te amo! ❤️';
     
     // Verify files still exist, clean up if deleted
     final List<String> validPaths = [];
@@ -81,6 +89,8 @@ class _MainConfigPageState extends State<MainConfigPage> {
 
     setState(() {
       _imagePaths = validPaths;
+      _loveNote = loveNote;
+      _loveNoteController.text = loveNote;
       _isLoading = false;
     });
   }
@@ -182,6 +192,85 @@ class _MainConfigPageState extends State<MainConfigPage> {
     );
   }
 
+  void _showEditLoveNoteDialog() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1735),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.edit_note_rounded, color: Color(0xFFFF6B8B)),
+              SizedBox(width: 10),
+              Text(
+                'Editar Dedicatoria 💌',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Escribe un mensaje de amor especial. Se mostrará al pie de la foto centrada en la pantalla de bloqueo:',
+                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _loveNoteController,
+                maxLines: 2,
+                maxLength: 60, // Keep it compact so it fits under the Polaroid
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF0F0B1E),
+                  hintText: 'Ej. ¡Eres el amor de mi vida! ❤️',
+                  hintStyle: const TextStyle(color: Colors.white30),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFFFF6B8B), width: 1.5),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Colors.white10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final navigator = Navigator.of(context);
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString('love_note', _loveNoteController.text);
+                setState(() {
+                  _loveNote = _loveNoteController.text;
+                });
+                if (mounted) {
+                  navigator.pop();
+                  _showSnackBar('¡Dedicatoria actualizada! 💌');
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFF6B8B),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('Guardar'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -254,7 +343,7 @@ class _MainConfigPageState extends State<MainConfigPage> {
   Widget _buildHeaderCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
@@ -281,33 +370,41 @@ class _MainConfigPageState extends State<MainConfigPage> {
             child: const Icon(
               Icons.favorite_rounded,
               color: Color(0xFFFF6B8B),
-              size: 28,
+              size: 26,
             ),
           ),
-          const SizedBox(width: 16),
-          const Expanded(
+          const SizedBox(width: 12),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Un Regalo Mágico ✨',
+                const Text(
+                  'Nuestra Dedicatoria Especial 💌',
                   style: TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
                   ),
                 ),
-                SizedBox(height: 4),
+                const SizedBox(height: 4),
                 Text(
-                  'Elige tus fotos favoritas. Flotarán en gravedad cero al estilo Polaroid y una se acercará cada vez que enciendas la pantalla.',
-                  style: TextStyle(
+                  _loveNote,
+                  style: const TextStyle(
                     fontSize: 12,
-                    color: Colors.white70,
+                    color: Color(0xFFFFB5C5),
+                    fontStyle: FontStyle.italic,
+                    fontWeight: FontWeight.w500,
                     height: 1.4,
                   ),
                 ),
               ],
             ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            icon: const Icon(Icons.edit_note_rounded, color: Color(0xFFFFD166), size: 28),
+            onPressed: _showEditLoveNoteDialog,
+            tooltip: 'Editar Dedicatoria',
           ),
         ],
       ),

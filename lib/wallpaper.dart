@@ -60,6 +60,7 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
   List<ui.Image> _loadedImages = [];
   bool _isLoading = true;
   bool _isVisible = true;
+  String _loveNote = 'Te amo ❤️';
 
   // Physics & Animation
   final List<PolaroidParticle> _particles = [];
@@ -117,6 +118,7 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
     try {
       final prefs = await SharedPreferences.getInstance();
       final paths = prefs.getStringList('selected_images') ?? [];
+      final loveNote = prefs.getString('love_note') ?? 'Te amo ❤️';
       
       final List<ui.Image> images = [];
       for (final path in paths) {
@@ -128,6 +130,7 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
 
       setState(() {
         _loadedImages = images;
+        _loveNote = loveNote;
         _isLoading = false;
       });
 
@@ -411,6 +414,7 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
                       selectedIdx: _selectedIdx,
                       isSelecting: _isSelecting,
                       selectionProgress: _selectionProgress,
+                      loveNote: _loveNote,
                     ),
                   ),
               ],
@@ -433,12 +437,14 @@ class PolaroidPhysicsPainter extends CustomPainter {
   final int selectedIdx;
   final bool isSelecting;
   final double selectionProgress;
+  final String loveNote;
 
   PolaroidPhysicsPainter({
     required this.particles,
     required this.selectedIdx,
     required this.isSelecting,
     required this.selectionProgress,
+    required this.loveNote,
   });
 
   @override
@@ -539,27 +545,51 @@ class PolaroidPhysicsPainter extends CustomPainter {
     }
 
     // 4. Draw a small romantic note / heart at the bottom
-    _drawPolaroidNote(canvas, w, h, p.index);
+    _drawPolaroidNote(canvas, w, h, p.index, p.index == selectedIdx && isSelecting);
 
     canvas.restore();
   }
 
-  void _drawPolaroidNote(Canvas canvas, double w, double h, int index) {
-    // Elegant tiny heart or quote under the picture
-    final heartPaint = Paint()
-      ..color = const Color(0xFFFF6B8B).withOpacity(0.8)
-      ..style = PaintingStyle.fill;
+  void _drawPolaroidNote(Canvas canvas, double w, double h, int index, bool isZoomed) {
+    if (isZoomed && loveNote.isNotEmpty) {
+      // Draw elegant customized text for the zoomed photo
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: loveNote,
+          style: const TextStyle(
+            color: Color(0xFFFF4B72),
+            fontSize: 6.0,
+            fontWeight: FontWeight.w600,
+            fontFamily: 'sans-serif', // Clean elegant fallback font
+            fontStyle: FontStyle.italic,
+          ),
+        ),
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout(maxWidth: w - 16.0);
+      
+      // Calculate drawing offset so it fits perfectly in the bottom margin of the Polaroid
+      final cx = 0.0;
+      final cy = h / 2 - 20.0;
+      textPainter.paint(canvas, Offset(cx - textPainter.width / 2, cy));
+    } else {
+      // Elegant tiny heart or quote under the picture
+      final heartPaint = Paint()
+        ..color = const Color(0xFFFF6B8B).withOpacity(0.8)
+        ..style = PaintingStyle.fill;
 
-    // Draw three cute mini dots or a tiny heart in the bottom margin
-    final path = Path();
-    final cx = 0.0;
-    final cy = h / 2 - 13.0;
-    final size = 7.0;
+      // Draw three cute mini dots or a tiny heart in the bottom margin
+      final path = Path();
+      final cx = 0.0;
+      final cy = h / 2 - 13.0;
+      final size = 7.0;
 
-    path.moveTo(cx, cy + size / 4);
-    path.cubicTo(cx - size / 2, cy - size / 2, cx - size, cy + size / 3, cx, cy + size);
-    path.cubicTo(cx + size, cy + size / 3, cx + size / 2, cy - size / 2, cx, cy + size / 4);
-    canvas.drawPath(path, heartPaint);
+      path.moveTo(cx, cy + size / 4);
+      path.cubicTo(cx - size / 2, cy - size / 2, cx - size, cy + size / 3, cx, cy + size);
+      path.cubicTo(cx + size, cy + size / 3, cx + size / 2, cy - size / 2, cx, cy + size / 4);
+      canvas.drawPath(path, heartPaint);
+    }
   }
 
   @override
