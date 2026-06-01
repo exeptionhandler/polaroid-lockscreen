@@ -6,7 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// Removed wallpaperMain as it was moved to main.dart
+// Logging helper - imported from main.dart won't work, so we redefine
+const _wpLogChannel = MethodChannel('com.stick.polaroid/wallpaper');
+void _wpLog(String msg) {
+  try { _wpLogChannel.invokeMethod('writeLog', msg); } catch (_) {}
+}
 
 class PolaroidParticle {
   double x;
@@ -47,13 +51,13 @@ class PolaroidWallpaperPage extends StatefulWidget {
   _PolaroidWallpaperPageState createState() => _PolaroidWallpaperPageState();
 }
 
-class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with SingleTickerProviderStateMixin {
+class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _channel = MethodChannel('com.stick.polaroid/wallpaper');
   
   List<ui.Image> _loadedImages = [];
-  bool _isLoading = true;
   bool _isVisible = true;
   String _loveNote = 'Te amo ❤️';
+  String _debugInfo = 'Iniciando...';
 
   // Physics & Animation
   final List<PolaroidParticle> _particles = [];
@@ -72,15 +76,20 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _wpLog('PolaroidWallpaperPage: initState called');
     
-    // Smooth high-refresh-rate animation controller
+    // Animation controller for physics tick
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 16),
     )..addListener(_tick);
 
     _setupMethodChannel();
-    _loadImages();
+    
+    // Load images in background with timeout - don't block rendering
+    _loadImagesWithTimeout();
+    _wpLog('PolaroidWallpaperPage: initState complete');
   }
 
   void _setupMethodChannel() {
@@ -107,35 +116,57 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
     });
   }
 
-  Future<void> _loadImages() async {
+  /// Load images with a 3-second timeout. If SharedPreferences hangs,
+  /// we still show placeholder particles instead of a black screen.
+  Future<void> _loadImagesWithTimeout() async {
+    _wpLog('_loadImages: starting');
     try {
-      final prefs = await SharedPreferences.getInstance();
+      // Timeout to prevent SharedPreferences from hanging forever
+      _wpLog('_loadImages: getting SharedPreferences...');
+      final prefs = await SharedPreferences.getInstance()
+          .timeout(const Duration(seconds: 3), onTimeout: () {
+        throw TimeoutException('SharedPreferences timed out');
+      });
+      _wpLog('_loadImages: SharedPreferences obtained');
+      
       final paths = prefs.getStringList('selected_images') ?? [];
       final loveNote = prefs.getString('love_note') ?? 'Te amo ❤️';
       
+      _wpLog('_loadImages: found ${paths.length} image paths');
+      
       final List<ui.Image> images = [];
       for (final path in paths) {
-        if (await File(path).exists()) {
-          final image = await _loadImage(path);
-          images.add(image);
+        try {
+          if (await File(path).exists()) {
+            final image = await _loadImage(path);
+            images.add(image);
+            _wpLog('_loadImages: loaded image from $path');
+          } else {
+            _wpLog('_loadImages: file NOT FOUND $path');
+          }
+        } catch (e) {
+          _wpLog('_loadImages: error loading image: $e');
         }
       }
 
-      setState(() {
-        _loadedImages = images;
-        _loveNote = loveNote;
-        _isLoading = false;
-      });
-
-      // Wait until screen size is known to initialize particles
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        setState(() {
+          _loadedImages = images;
+          _loveNote = loveNote;
+        });
+        _wpLog('_loadImages: SUCCESS - ${images.length} images loaded');
         _initializeParticles();
-      });
+      }
     } catch (e) {
+      _wpLog('_loadImages: FAILED - $e');
+    }
+  }
+
+  void _updateDebug(String msg) {
+    if (mounted) {
       setState(() {
-        _isLoading = false;
+        _debugInfo = msg;
       });
-      _initializeParticles();
     }
   }
 
@@ -146,8 +177,39 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
     return frame.image;
   }
 
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    _wpLog('didChangeMetrics: updating size');
+    _updateScreenSizeFromDispatcher();
+  }
+
+  void _updateScreenSizeFromDispatcher() {
+    try {
+      final view = ui.PlatformDispatcher.instance.views.first;
+      final physicalSize = view.physicalSize;
+      final dpr = view.devicePixelRatio;
+      if (physicalSize.width > 0 && physicalSize.height > 0 && dpr > 0) {
+        final logicalSize = Size(physicalSize.width / dpr, physicalSize.height / dpr);
+        if (_screenSize != logicalSize) {
+          _wpLog('_updateScreenSizeFromDispatcher: size changed to $logicalSize');
+          setState(() {
+            _screenSize = logicalSize;
+          });
+          _initializeParticles();
+        }
+      }
+    } catch (e) {
+      _wpLog('_updateScreenSizeFromDispatcher: error $e');
+    }
+  }
+
   void _initializeParticles() {
-    if (_screenSize == Size.zero) return;
+    _wpLog('_initParticles: screenSize=$_screenSize, images=${_loadedImages.length}');
+    if (_screenSize == Size.zero) {
+      _wpLog('_initParticles: SKIPPED - screenSize is zero');
+      return;
+    }
     
     _particles.clear();
     _elapsedTime = 0.0;
@@ -167,7 +229,7 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
       
       // Zero gravity velocity vectors (smooth and gentle floating)
       final angle = _random.nextDouble() * 2 * math.pi;
-      final speed = 40.0 + _random.nextDouble() * 40.0; // pixels per second
+      final speed = 40.0 + _random.nextDouble() * 40.0;
       final vx = math.cos(angle) * speed;
       final vy = math.sin(angle) * speed;
 
@@ -177,7 +239,7 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
           y: y,
           vx: vx,
           vy: vy,
-          angle: (_random.nextDouble() - 0.5) * 0.4, // subtle initial tilt
+          angle: (_random.nextDouble() - 0.5) * 0.4,
           vAngle: (_random.nextDouble() - 0.5) * 0.3,
           image: img,
           index: i,
@@ -192,7 +254,6 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
   }
 
   void _resumePhysics() {
-    // Restart animation, reset timeline, randomize positions
     _initializeParticles();
   }
 
@@ -203,7 +264,6 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
   void _handleTouch(double tx, double ty) {
     if (_isSelecting) return;
     
-    // Give all nearby particles a gentle physical push away from the touch point
     for (final p in _particles) {
       final dx = p.x - tx;
       final dy = p.y - ty;
@@ -236,7 +296,6 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
 
     if (!_isSelecting) {
       _elapsedTime += dt;
-      // Start selection process after 2.5 seconds
       if (_elapsedTime >= 2.5) {
         _isSelecting = true;
         _selectedIdx = _random.nextInt(_particles.length);
@@ -249,10 +308,10 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
     }
 
     if (_isSelecting && _selectedIdx != -1) {
-      _selectionProgress += dt * 1.2; // complete zoom in ~0.8s
+      _selectionProgress += dt * 1.2;
       if (_selectionProgress >= 1.0) {
         _selectionProgress = 1.0;
-        _controller.stop(); // Stop physics engine completely to save battery
+        _controller.stop();
       }
     }
 
@@ -261,7 +320,6 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
       final p = _particles[i];
       
       if (i == _selectedIdx && _isSelecting) {
-        // Selected Polaroid: Smooth bezier / curved interpolation to center
         final t = Curves.easeInOut.transform(_selectionProgress);
         final targetX = _screenSize.width / 2;
         final targetY = _screenSize.height / 2;
@@ -271,26 +329,23 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
         p.angle = ui.lerpDouble(p.startAngle, 0.0, t)!;
         p.scale = ui.lerpDouble(1.0, 2.3, t)!;
       } else {
-        // Floating Polaroids: Update using standard velocity vectors
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.angle += p.vAngle * dt;
 
-        // Limit speed to prevent chaotic collisions
         final speed = math.sqrt(p.vx * p.vx + p.vy * p.vy);
         if (speed > 150.0) {
           p.vx = (p.vx / speed) * 150.0;
           p.vy = (p.vy / speed) * 150.0;
         }
         
-        // Dynamic angular damping
         p.vAngle *= 0.98;
 
         // 2. Edge Bounces
         final rad = p.radius;
         if (p.x - rad < 0) {
           p.x = rad;
-          p.vx = p.vx.abs() * 0.95; // highly elastic
+          p.vx = p.vx.abs() * 0.95;
         } else if (p.x + rad > _screenSize.width) {
           p.x = _screenSize.width - rad;
           p.vx = -p.vx.abs() * 0.95;
@@ -306,7 +361,7 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
       }
     }
 
-    // 3. Elastic Collisions between particles (exclude selected particle)
+    // 3. Elastic Collisions
     for (int i = 0; i < _particles.length; i++) {
       if (i == _selectedIdx && _isSelecting) continue;
       for (int j = i + 1; j < _particles.length; j++) {
@@ -321,7 +376,6 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
         final minDist = p1.radius + p2.radius;
         
         if (dist < minDist && dist > 0) {
-          // Resolve overlap to prevent sticky elements
           final overlap = minDist - dist;
           final resolveX = (dx / dist) * overlap * 0.5;
           final resolveY = (dy / dist) * overlap * 0.5;
@@ -331,18 +385,14 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
           p2.x += resolveX;
           p2.y += resolveY;
 
-          // Elastic 2D physics math
           final nx = dx / dist;
           final ny = dy / dist;
           
-          // Relative velocity
           final rvx = p2.vx - p1.vx;
           final rvy = p2.vy - p1.vy;
           
-          // Velocity along the normal
           final velAlongNormal = rvx * nx + rvy * ny;
           
-          // Only resolve if velocities are approaching each other
           if (velAlongNormal < 0) {
             final impulse = -(1.0 + 0.9) * velAlongNormal / (1 / p1.mass + 1 / p2.mass);
             
@@ -352,7 +402,6 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
             p2.vx += (impulse / p2.mass) * nx;
             p2.vy += (impulse / p2.mass) * ny;
             
-            // Random spin addition
             p1.vAngle += (_random.nextDouble() - 0.5) * 1.5;
             p2.vAngle += (_random.nextDouble() - 0.5) * 1.5;
           }
@@ -365,43 +414,51 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (_screenSize != Size(constraints.maxWidth, constraints.maxHeight)) {
-          _screenSize = Size(constraints.maxWidth, constraints.maxHeight);
-          // Initialize/reposition if resized
-          _initializeParticles();
-        }
+    _wpLog('build: called, particles=${_particles.length}, screenSize=$_screenSize');
+    
+    // Try to init size from dispatcher if zero
+    if (_screenSize == Size.zero) {
+      _updateScreenSizeFromDispatcher();
+    }
 
-        return Scaffold(
-          backgroundColor: Colors.transparent,
-          body: Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Color(0xFF0F0B1E), // Soft dark purple/night
-                  Color(0xFF1E1735),
-                  Color(0xFF2E2248),
-                ],
-              ),
+    if (_screenSize == Size.zero) {
+      _wpLog('build: INVALID constraints - showing fallback');
+      return Container(
+        color: const Color(0xFF1A1040),
+        child: const Center(
+          child: Text('Cargando...', style: TextStyle(color: Colors.white, fontSize: 16)),
+        ),
+      );
+    }
+
+    _wpLog('build: screenSize=$_screenSize');
+
+    return Material(
+      color: const Color(0xFF1A1040),
+      child: Container(
+        width: _screenSize.width,
+        height: _screenSize.height,
+        decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Color(0xFF1A1040), // Visible dark purple (not black)
+                Color(0xFF2A1E55), // Medium dark purple
+                Color(0xFF3D2E6E), // Lighter purple at bottom
+              ],
             ),
-            child: Stack(
-              children: [
-                // Aesthetic starfield/sparkles background
-                const Positioned.fill(
-                  child: StarFieldWidget(),
-                ),
-                if (_isLoading)
-                  const Center(
-                    child: CircularProgressIndicator(
-                      color: Color(0xFFFF6B8B),
-                    ),
-                  )
-                else
-                  CustomPaint(
-                    size: Size.infinite,
+          ),
+          child: Stack(
+            children: [
+              // Aesthetic starfield/sparkles background
+              Positioned.fill(
+                child: StarFieldWidget(screenSize: _screenSize),
+              ),
+              // Physics-based Polaroid rendering
+              if (_particles.isNotEmpty)
+                Positioned.fill(
+                  child: CustomPaint(
                     painter: PolaroidPhysicsPainter(
                       particles: _particles,
                       selectedIdx: _selectedIdx,
@@ -410,16 +467,16 @@ class _PolaroidWallpaperPageState extends State<PolaroidWallpaperPage> with Sing
                       loveNote: _loveNote,
                     ),
                   ),
-              ],
-            ),
+                ),
+            ],
           ),
-        );
-      },
+        ),
     );
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
     super.dispose();
   }
@@ -448,9 +505,8 @@ class PolaroidPhysicsPainter extends CustomPainter {
       _drawPolaroid(canvas, particles[i]);
     }
 
-    // 2. Paint selected particle on top so it stands out while zooming
+    // 2. Paint selected particle on top
     if (selectedIdx != -1 && selectedIdx < particles.length) {
-      // Draw a dark overlay behind the zoomed Polaroid for dramatic effect
       if (isSelecting) {
         final overlayPaint = Paint()
           ..color = Colors.black.withOpacity(selectionProgress * 0.55);
@@ -463,37 +519,34 @@ class PolaroidPhysicsPainter extends CustomPainter {
   void _drawPolaroid(Canvas canvas, PolaroidParticle p) {
     canvas.save();
     
-    // Translate and rotate
     canvas.translate(p.x, p.y);
     canvas.rotate(p.angle);
     canvas.scale(p.scale);
 
-    // Standard Polaroid dimensions (110x132)
     final w = 110.0;
     final h = 132.0;
     final rect = Rect.fromLTWH(-w / 2, -h / 2, w, h);
     final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(4.0));
 
-    // 1. Draw subtle elevation drop-shadow
+    // 1. Drop shadow
     final shadowPaint = Paint()
       ..color = Colors.black.withOpacity(0.35)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0);
     canvas.drawRRect(rrect.shift(const Offset(2.0, 4.0)), shadowPaint);
 
-    // 2. Draw white Polaroid border/frame
+    // 2. White Polaroid frame
     final framePaint = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.fill;
     canvas.drawRRect(rrect, framePaint);
 
-    // 3. Draw standard Polaroid picture area (top-centered square: 94x94)
+    // 3. Picture area
     final imgW = 94.0;
     final imgH = 94.0;
     final imgRect = Rect.fromLTWH(-imgW / 2, -h / 2 + 8.0, imgW, imgH);
     final imgRRect = RRect.fromRectAndRadius(imgRect, const Radius.circular(2.0));
 
     if (p.image != null) {
-      // Crop image to square aspect ratio elastically
       canvas.save();
       canvas.clipRRect(imgRRect);
       
@@ -511,7 +564,7 @@ class PolaroidPhysicsPainter extends CustomPainter {
       canvas.drawImageRect(p.image!, srcRect, imgRect, Paint()..isAntiAlias = true);
       canvas.restore();
     } else {
-      // Default romantic placeholder: pink/purple gradient with red heart
+      // Romantic placeholder gradient with heart
       final gradientPaint = Paint()
         ..shader = ui.Gradient.linear(
           imgRect.topLeft,
@@ -520,7 +573,6 @@ class PolaroidPhysicsPainter extends CustomPainter {
         );
       canvas.drawRRect(imgRRect, gradientPaint);
 
-      // Draw cute handwritten style heart
       final heartPaint = Paint()
         ..color = const Color(0xFFFF4B72)
         ..style = PaintingStyle.fill
@@ -537,7 +589,7 @@ class PolaroidPhysicsPainter extends CustomPainter {
       canvas.drawPath(path, heartPaint);
     }
 
-    // 4. Draw a small romantic note / heart at the bottom
+    // 4. Note at bottom
     _drawPolaroidNote(canvas, w, h, p.index, p.index == selectedIdx && isSelecting);
 
     canvas.restore();
@@ -545,7 +597,6 @@ class PolaroidPhysicsPainter extends CustomPainter {
 
   void _drawPolaroidNote(Canvas canvas, double w, double h, int index, bool isZoomed) {
     if (isZoomed && loveNote.isNotEmpty) {
-      // Draw elegant customized text for the zoomed photo
       final textPainter = TextPainter(
         text: TextSpan(
           text: loveNote,
@@ -553,7 +604,7 @@ class PolaroidPhysicsPainter extends CustomPainter {
             color: Color(0xFFFF4B72),
             fontSize: 6.0,
             fontWeight: FontWeight.w600,
-            fontFamily: 'sans-serif', // Clean elegant fallback font
+            fontFamily: 'sans-serif',
             fontStyle: FontStyle.italic,
           ),
         ),
@@ -562,17 +613,14 @@ class PolaroidPhysicsPainter extends CustomPainter {
       );
       textPainter.layout(maxWidth: w - 16.0);
       
-      // Calculate drawing offset so it fits perfectly in the bottom margin of the Polaroid
       final cx = 0.0;
       final cy = h / 2 - 20.0;
       textPainter.paint(canvas, Offset(cx - textPainter.width / 2, cy));
     } else {
-      // Elegant tiny heart or quote under the picture
       final heartPaint = Paint()
         ..color = const Color(0xFFFF6B8B).withOpacity(0.8)
         ..style = PaintingStyle.fill;
 
-      // Draw three cute mini dots or a tiny heart in the bottom margin
       final path = Path();
       final cx = 0.0;
       final cy = h / 2 - 13.0;
@@ -589,9 +637,10 @@ class PolaroidPhysicsPainter extends CustomPainter {
   bool shouldRepaint(covariant PolaroidPhysicsPainter oldDelegate) => true;
 }
 
-// Sparkly aesthetic animated stars for premium feel
+/// Sparkly stars background - uses explicit size instead of MediaQuery
 class StarFieldWidget extends StatefulWidget {
-  const StarFieldWidget({Key? key}) : super(key: key);
+  final Size screenSize;
+  const StarFieldWidget({Key? key, required this.screenSize}) : super(key: key);
 
   @override
   _StarFieldWidgetState createState() => _StarFieldWidgetState();
@@ -609,19 +658,27 @@ class _StarFieldWidgetState extends State<StarFieldWidget> with SingleTickerProv
       vsync: this,
       duration: const Duration(seconds: 4),
     )..repeat();
+    _generateStars();
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_stars.isEmpty) {
-      final size = MediaQuery.of(context).size;
+  void _generateStars() {
+    _stars.clear();
+    final size = widget.screenSize;
+    if (size.width > 0 && size.height > 0) {
       for (int i = 0; i < 40; i++) {
         _stars.add(ui.Offset(
           _random.nextDouble() * size.width,
           _random.nextDouble() * size.height,
         ));
       }
+    }
+  }
+
+  @override
+  void didUpdateWidget(StarFieldWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.screenSize != widget.screenSize && _stars.isEmpty) {
+      _generateStars();
     }
   }
 
@@ -653,11 +710,10 @@ class StarFieldPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()..style = PaintingStyle.fill;
-    final r = math.Random(42); // stable random seed for matching index twinkling
+    final r = math.Random(42);
 
     for (int i = 0; i < stars.length; i++) {
       final star = stars[i];
-      // Twinkling effect
       final pulse = math.sin((progress * 2 * math.pi) + r.nextDouble() * 10);
       final opacity = 0.15 + (pulse.abs() * 0.45);
       final radius = 1.0 + (pulse.abs() * 1.5);

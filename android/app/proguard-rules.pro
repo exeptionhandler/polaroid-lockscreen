@@ -19,6 +19,9 @@
 -keep class com.stick.polaroid.polaroid_lockscreen.LiveWallpaperService$FlutterWallpaperEngine { *; }
 -keep class com.stick.polaroid.polaroid_lockscreen.MainActivity { *; }
 
+# Keep GeneratedPluginRegistrant (accessed via reflection in LiveWallpaperService)
+-keep class io.flutter.plugins.GeneratedPluginRegistrant { *; }
+
 # Suppress warnings that might block the build
 -dontwarn io.flutter.embedding.android.**
 -dontwarn com.google.android.play.core.**

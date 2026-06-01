@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -5,21 +6,62 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart';
 
 // Import wallpaper entrypoint so it is not pruned by compiler
 import 'wallpaper.dart';
 
+/// Helper to log from Dart to the native log file
+const _logChannel = MethodChannel('com.stick.polaroid/wallpaper');
+void _dartLog(String msg) {
+  try {
+    _logChannel.invokeMethod('writeLog', msg);
+  } catch (_) {}
+}
+
 @pragma('vm:entry-point')
 void wallpaperMain() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MaterialApp(
-    home: PolaroidWallpaperPage(),
-    debugShowCheckedModeBanner: false,
-  ));
+  _dartLog('wallpaperMain: ENTERED');
+  
+  runZonedGuarded(() {
+    _dartLog('wallpaperMain: runZonedGuarded started');
+    _dartLog('wallpaperMain: WidgetsFlutterBinding initialized');
+    
+    ErrorWidget.builder = (FlutterErrorDetails details) {
+      _dartLog('ErrorWidget: ${details.exceptionAsString()}');
+      return Container(
+        color: const Color(0xFF1E1735),
+        child: Center(
+          child: Text(
+            'Error: ${details.exceptionAsString()}',
+            style: const TextStyle(color: Color(0xFFFF6B8B), fontSize: 14),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    };
+    
+    FlutterError.onError = (FlutterErrorDetails details) {
+      _dartLog('FlutterError: ${details.exceptionAsString()}');
+      _logChannel.invokeMethod('showToast', details.exceptionAsString());
+    };
+    
+    _dartLog('wallpaperMain: calling runApp');
+    runApp(const MaterialApp(
+      home: PolaroidWallpaperPage(),
+      debugShowCheckedModeBanner: false,
+    ));
+    _dartLog('wallpaperMain: runApp completed');
+  }, (error, stackTrace) {
+    _dartLog('ZONE ERROR: $error\n$stackTrace');
+    _logChannel.invokeMethod('showToast', 'Async Error: $error');
+  });
 }
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await LiquidGlassWidgets.initialize();
   runApp(const MyApp());
 }
 
@@ -28,20 +70,28 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Polaroid Lockscreen',
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0F0B1E),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFFFF6B8B),
-          secondary: Color(0xFFFFD166),
-          surface: Color(0xFF1E1735),
-        ),
-        useMaterial3: true,
+    return LiquidGlassWidgets.wrap(
+      adaptiveQuality: true,
+      theme: GlassThemeData.simple(
+        blur: 12,
+        thickness: 35,
+        quality: GlassQuality.standard,
       ),
-      home: const MainConfigPage(),
-      debugShowCheckedModeBanner: false,
+      child: MaterialApp(
+        title: 'Polaroid Lockscreen',
+        theme: ThemeData(
+          brightness: Brightness.dark,
+          scaffoldBackgroundColor: Colors.transparent,
+          colorScheme: const ColorScheme.dark(
+            primary: Color(0xFFFF6B8B),
+            secondary: Color(0xFFFFD166),
+            surface: Color(0xFF1E1735),
+          ),
+          useMaterial3: true,
+        ),
+        home: const MainConfigPage(),
+        debugShowCheckedModeBanner: false,
+      ),
     );
   }
 }
@@ -53,39 +103,52 @@ class MainConfigPage extends StatefulWidget {
   State<MainConfigPage> createState() => _MainConfigPageState();
 }
 
-class _MainConfigPageState extends State<MainConfigPage> {
-  static const _configChannel = MethodChannel('com.stick.polaroid/wallpaper_config');
+class _MainConfigPageState extends State<MainConfigPage>
+    with SingleTickerProviderStateMixin {
+  static const _configChannel =
+      MethodChannel('com.stick.polaroid/wallpaper_config');
   final ImagePicker _picker = ImagePicker();
   List<String> _imagePaths = [];
   bool _isLoading = true;
   String _loveNote = 'Nuestros momentos más felices... ¡Te amo! ❤️';
   final TextEditingController _loveNoteController = TextEditingController();
+  String _polaroidEmoji = '❤️';
+  final TextEditingController _emojiController = TextEditingController();
+
+  late AnimationController _bgAnimController;
 
   @override
   void initState() {
     super.initState();
+    _bgAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 20),
+    )..repeat();
     _loadSavedImages();
   }
 
   @override
   void dispose() {
     _loveNoteController.dispose();
+    _emojiController.dispose();
+    _bgAnimController.dispose();
     super.dispose();
   }
 
   Future<void> _loadSavedImages() async {
     final prefs = await SharedPreferences.getInstance();
     final paths = prefs.getStringList('selected_images') ?? [];
-    final loveNote = prefs.getString('love_note') ?? 'Nuestros momentos más felices... ¡Te amo! ❤️';
-    
-    // Verify files still exist, clean up if deleted
+    final loveNote = prefs.getString('love_note') ??
+        'Nuestros momentos más felices... ¡Te amo! ❤️';
+    final polaroidEmoji = prefs.getString('polaroid_emoji') ?? '❤️';
+
     final List<String> validPaths = [];
     for (final path in paths) {
       if (await File(path).exists()) {
         validPaths.add(path);
       }
     }
-    
+
     if (validPaths.length != paths.length) {
       await prefs.setStringList('selected_images', validPaths);
     }
@@ -94,6 +157,8 @@ class _MainConfigPageState extends State<MainConfigPage> {
       _imagePaths = validPaths;
       _loveNote = loveNote;
       _loveNoteController.text = loveNote;
+      _polaroidEmoji = polaroidEmoji;
+      _emojiController.text = polaroidEmoji;
       _isLoading = false;
     });
   }
@@ -101,26 +166,25 @@ class _MainConfigPageState extends State<MainConfigPage> {
   Future<void> _addImages() async {
     try {
       final List<XFile> pickedFiles = await _picker.pickMultiImage(
-        imageQuality: 85, // Optimize size
+        imageQuality: 85,
         maxWidth: 1000,
         maxHeight: 1000,
       );
 
       if (pickedFiles.isEmpty) return;
 
-      setState(() {
-        _isLoading = true;
-      });
+      setState(() => _isLoading = true);
 
       final directory = await getApplicationDocumentsDirectory();
       final prefs = await SharedPreferences.getInstance();
-      
+
       final List<String> newPaths = List.from(_imagePaths);
 
       for (final file in pickedFiles) {
-        // Copy picked image to app permanent storage
-        final fileName = 'polaroid_${DateTime.now().millisecondsSinceEpoch}_${math.Random().nextInt(1000)}.jpg';
-        final savedFile = await File(file.path).copy('${directory.path}/$fileName');
+        final fileName =
+            'polaroid_${DateTime.now().millisecondsSinceEpoch}_${math.Random().nextInt(1000)}.jpg';
+        final savedFile =
+            await File(file.path).copy('${directory.path}/$fileName');
         newPaths.add(savedFile.path);
       }
 
@@ -133,9 +197,7 @@ class _MainConfigPageState extends State<MainConfigPage> {
 
       _showSnackBar('¡Fotos añadidas con éxito! ❤️');
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
       _showSnackBar('Error al seleccionar fotos: $e 😢');
     }
   }
@@ -151,9 +213,7 @@ class _MainConfigPageState extends State<MainConfigPage> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setStringList('selected_images', newPaths);
 
-      setState(() {
-        _imagePaths = newPaths;
-      });
+      setState(() => _imagePaths = newPaths);
 
       _showSnackBar('Foto eliminada 💔');
     } catch (e) {
@@ -166,14 +226,75 @@ class _MainConfigPageState extends State<MainConfigPage> {
       _showSnackBar('Añade al menos una foto primero uwu');
       return;
     }
-    
+
     try {
-      final bool success = await _configChannel.invokeMethod('openWallpaperChooser');
+      final bool success =
+          await _configChannel.invokeMethod('openWallpaperChooser');
       if (!success) {
         _showSnackBar('No se pudo abrir el selector de fondos 😢');
       }
     } catch (e) {
       _showSnackBar('Error de plataforma: $e 😢');
+    }
+  }
+
+  Future<void> _showWallpaperLogs() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final logPath = directory.path
+          .replaceAll('/app_flutter', '/files/wallpaper_log.txt');
+      final logFile = File(logPath);
+
+      String logContent;
+      if (await logFile.exists()) {
+        logContent = await logFile.readAsString();
+      } else {
+        logContent =
+            'No hay logs todavía.\n\nEl archivo de log se crea cuando el servicio de wallpaper se inicia.\n\nRuta buscada: $logPath';
+      }
+
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1735).withOpacity(0.92),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.bug_report, color: Color(0xFFFFD166), size: 22),
+              SizedBox(width: 8),
+              Text('Wallpaper Logs 🔍',
+                  style: TextStyle(color: Colors.white, fontSize: 16)),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 400,
+            child: SingleChildScrollView(
+              reverse: true,
+              child: SelectableText(
+                logContent,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cerrar',
+                  style: TextStyle(color: Color(0xFFFF6B8B))),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      _showSnackBar('Error leyendo logs: $e');
     }
   }
 
@@ -187,9 +308,9 @@ class _MainConfigPageState extends State<MainConfigPage> {
             fontWeight: FontWeight.w600,
           ),
         ),
-        backgroundColor: const Color(0xFFFF6B8B),
+        backgroundColor: const Color(0xFFFF6B8B).withOpacity(0.9),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -200,15 +321,17 @@ class _MainConfigPageState extends State<MainConfigPage> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          backgroundColor: const Color(0xFF1E1735),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          backgroundColor: const Color(0xFF1E1735).withOpacity(0.92),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
           title: const Row(
             children: [
               Icon(Icons.edit_note_rounded, color: Color(0xFFFF6B8B)),
               SizedBox(width: 10),
               Text(
-                'Editar Dedicatoria 💌',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                'Personalizar 💌',
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.bold),
               ),
             ],
           ),
@@ -217,14 +340,15 @@ class _MainConfigPageState extends State<MainConfigPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Escribe un mensaje de amor especial. Se mostrará al pie de la foto centrada en la pantalla de bloqueo:',
-                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                'Mensaje de amor (al pie de foto grande):',
+                style: TextStyle(
+                    color: Colors.white70, fontSize: 13, height: 1.4),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 8),
               TextField(
                 controller: _loveNoteController,
                 maxLines: 2,
-                maxLength: 60, // Keep it compact so it fits under the Polaroid
+                maxLength: 60,
                 style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
                   filled: true,
@@ -232,11 +356,40 @@ class _MainConfigPageState extends State<MainConfigPage> {
                   hintText: 'Ej. ¡Eres el amor de mi vida! ❤️',
                   hintStyle: const TextStyle(color: Colors.white30),
                   focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(color: Color(0xFFFF6B8B), width: 1.5),
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide:
+                        const BorderSide(color: Color(0xFFFF6B8B), width: 1.5),
                   ),
                   enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: const BorderSide(color: Colors.white10),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Emoji pequeño (en fotos flotantes):',
+                style: TextStyle(
+                    color: Colors.white70, fontSize: 13, height: 1.4),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _emojiController,
+                maxLength: 2,
+                style: const TextStyle(color: Colors.white, fontSize: 22),
+                textAlign: TextAlign.center,
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF0F0B1E),
+                  hintText: '❤️',
+                  hintStyle: const TextStyle(color: Colors.white30),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide:
+                        const BorderSide(color: Color(0xFFFF6B8B), width: 1.5),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
                     borderSide: const BorderSide(color: Colors.white10),
                   ),
                 ),
@@ -246,25 +399,30 @@ class _MainConfigPageState extends State<MainConfigPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
+              child:
+                  const Text('Cancelar', style: TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
               onPressed: () async {
                 final navigator = Navigator.of(context);
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setString('love_note', _loveNoteController.text);
+                await prefs.setString(
+                    'polaroid_emoji', _emojiController.text);
                 setState(() {
                   _loveNote = _loveNoteController.text;
+                  _polaroidEmoji = _emojiController.text;
                 });
                 if (mounted) {
                   navigator.pop();
-                  _showSnackBar('¡Dedicatoria actualizada! 💌');
+                  _showSnackBar('¡Actualizado! 💌');
                 }
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFFFF6B8B),
                 foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
               ),
               child: const Text('Guardar'),
             ),
@@ -276,218 +434,326 @@ class _MainConfigPageState extends State<MainConfigPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Polaroid Lockscreen ❤️',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            letterSpacing: 0.8,
-            color: Colors.white,
-          ),
-        ),
-        centerTitle: true,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        systemOverlayStyle: SystemUiOverlayStyle.light,
-      ),
-      body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                color: Color(0xFFFF6B8B),
-              ),
-            )
-          : Container(
-              width: double.infinity,
-              height: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SizedBox(height: 8),
-                  // Romantic Header Card
-                  _buildHeaderCard(),
-                  const SizedBox(height: 20),
-                  const Text(
-                    'Tus Momentos Seleccionados',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white70,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  // Grid / Empty State
-                  Expanded(
-                    child: _imagePaths.isEmpty
-                        ? _buildEmptyState()
-                        : _buildPhotoGrid(),
-                  ),
-                  const SizedBox(height: 80), // Space for floating button
-                ],
-              ),
-            ),
-      bottomSheet: _buildBottomActions(),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addImages,
-        backgroundColor: const Color(0xFFFF6B8B),
-        foregroundColor: Colors.white,
-        elevation: 6,
-        icon: const Icon(Icons.add_photo_alternate_rounded, size: 24),
-        label: const Text(
-          'Añadir Fotos',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endContained,
-    );
-  }
-
-  Widget _buildHeaderCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            const Color(0xFFFF6B8B).withOpacity(0.15),
-            const Color(0xFFC7A2E5).withOpacity(0.15),
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: const Color(0xFFFF6B8B).withOpacity(0.3),
-          width: 1.5,
-        ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
+    return GlassPage(
+      background: AnimatedBuilder(
+        animation: _bgAnimController,
+        builder: (context, child) {
+          return Container(
             decoration: BoxDecoration(
-              color: const Color(0xFFFF6B8B).withOpacity(0.2),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.favorite_rounded,
-              color: Color(0xFFFF6B8B),
-              size: 26,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Nuestra Dedicatoria Especial 💌',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
+              gradient: LinearGradient(
+                begin: Alignment(
+                  math.cos(_bgAnimController.value * 2 * math.pi) * 0.5,
+                  math.sin(_bgAnimController.value * 2 * math.pi) * 0.5,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  _loveNote,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFFFFB5C5),
-                    fontStyle: FontStyle.italic,
-                    fontWeight: FontWeight.w500,
-                    height: 1.4,
-                  ),
+                end: Alignment(
+                  math.cos((_bgAnimController.value + 0.5) * 2 * math.pi) *
+                      0.5,
+                  math.sin((_bgAnimController.value + 0.5) * 2 * math.pi) *
+                      0.5,
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          IconButton(
-            icon: const Icon(Icons.edit_note_rounded, color: Color(0xFFFFD166), size: 28),
-            onPressed: _showEditLoveNoteDialog,
-            tooltip: 'Editar Dedicatoria',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        margin: const EdgeInsets.only(bottom: 40),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E1735).withOpacity(0.6),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.photo_library_outlined,
-              size: 64,
-              color: const Color(0xFFFFD166).withOpacity(0.8),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Aún no hay recuerdos agregados',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
+                colors: const [
+                  Color(0xFF0F0B1E),
+                  Color(0xFF1A1040),
+                  Color(0xFF2A1E55),
+                  Color(0xFF3D2E6E),
+                  Color(0xFF1A1040),
+                ],
+                stops: const [0.0, 0.25, 0.5, 0.75, 1.0],
               ),
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Toca el botón rosa de abajo para elegir fotos bonitas de la galería de tu celular.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 13,
-                color: Colors.white60,
-                height: 1.4,
+          );
+        },
+      ),
+      edgeToEdge: true,
+      statusBarStyle: GlassStatusBarStyle.light,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: _isLoading
+            ? const Center(
+                child: CircularProgressIndicator(
+                  color: Color(0xFFFF6B8B),
+                ),
+              )
+            : SafeArea(
+                child: CustomScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  slivers: [
+                    // ── Glass App Bar ──
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                        child: GlassContainer(
+                          shape: const LiquidRoundedSuperellipse(borderRadius: 22),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 12),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.favorite_rounded,
+                                  color: Color(0xFFFF6B8B), size: 28),
+                              const SizedBox(width: 10),
+                              const Expanded(
+                                child: Text(
+                                  'Polaroid Lockscreen',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ),
+                              GlassButton(
+                                icon: const Icon(Icons.bug_report_outlined,
+                                    color: Colors.white54, size: 20),
+                                onTap: _showWallpaperLogs,
+                                width: 40,
+                                height: 40,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SliverToBoxAdapter(child: SizedBox(height: 16)),
+
+                    // ── Dedication Card ──
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: GlassCard(
+                          shape: const LiquidRoundedSuperellipse(borderRadius: 22),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFF6B8B)
+                                        .withOpacity(0.25),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Text(
+                                    _polaroidEmoji.isNotEmpty
+                                        ? _polaroidEmoji
+                                        : '❤️',
+                                    style: const TextStyle(fontSize: 22),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Dedicatoria Especial 💌',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _loveNote,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Color(0xFFFFB5C5),
+                                          fontStyle: FontStyle.italic,
+                                          fontWeight: FontWeight.w500,
+                                          height: 1.4,
+                                        ),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                GlassButton(
+                                  icon: const Icon(Icons.edit_note_rounded,
+                                      color: Color(0xFFFFD166), size: 26),
+                                  onTap: _showEditLoveNoteDialog,
+                                  width: 44,
+                                  height: 44,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SliverToBoxAdapter(child: SizedBox(height: 20)),
+
+                    // ── Section Title ──
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.photo_library_rounded,
+                                color: Colors.white54, size: 18),
+                            const SizedBox(width: 8),
+                            const Text(
+                              'Tus Momentos',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white70,
+                              ),
+                            ),
+                            const Spacer(),
+                            Text(
+                              '${_imagePaths.length} fotos',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.white.withOpacity(0.4),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SliverToBoxAdapter(child: SizedBox(height: 12)),
+
+                    // ── Photo Grid or Empty State ──
+                    if (_imagePaths.isEmpty)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: GlassCard(
+                            shape: const LiquidRoundedSuperellipse(borderRadius: 22),
+                            child: Padding(
+                              padding: const EdgeInsets.all(32),
+                              child: Column(
+                                children: [
+                                  Icon(
+                                    Icons.photo_library_outlined,
+                                    size: 56,
+                                    color: const Color(0xFFFFD166)
+                                        .withOpacity(0.7),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  const Text(
+                                    'Aún no hay recuerdos',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Toca el botón de abajo para elegir tus fotos favoritas 📸',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: Colors.white60,
+                                      height: 1.4,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      )
+                    else
+                      SliverPadding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        sliver: SliverGrid(
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            crossAxisSpacing: 14,
+                            mainAxisSpacing: 14,
+                            childAspectRatio: 0.78,
+                          ),
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) =>
+                                _buildPolaroidGridItem(index),
+                            childCount: _imagePaths.length,
+                          ),
+                        ),
+                      ),
+
+                    // Bottom spacing for buttons
+                    const SliverToBoxAdapter(child: SizedBox(height: 160)),
+                  ],
+                ),
               ),
-            ),
-          ],
+
+        // ── Bottom Action Buttons ──
+        bottomNavigationBar: Container(
+          padding:
+              EdgeInsets.only(bottom: MediaQuery.of(context).padding.bottom + 12, left: 16, right: 16, top: 10),
+          child: Row(
+            children: [
+              // Apply wallpaper button
+              Expanded(
+                child: GlassButton.custom(
+                  onTap: _launchWallpaperChooser,
+                  width: double.infinity,
+                  height: 52,
+                  shape: const LiquidRoundedSuperellipse(borderRadius: 18),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.wallpaper_rounded,
+                          color: Color(0xFFFFD166), size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        'Aplicar Fondo 💖',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 14,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Add photos button
+              GlassButton.custom(
+                onTap: _addImages,
+                width: 120,
+                height: 52,
+                shape: const LiquidRoundedSuperellipse(borderRadius: 18),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.add_photo_alternate_rounded,
+                        color: Color(0xFFFF6B8B), size: 22),
+                    SizedBox(width: 6),
+                    Text(
+                      'Añadir',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
-    );
-  }
-
-  Widget _buildPhotoGrid() {
-    return GridView.builder(
-      physics: const BouncingScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        crossAxisSpacing: 16,
-        mainAxisSpacing: 16,
-        childAspectRatio: 0.8, // standard Polaroid ratio
-      ),
-      itemCount: _imagePaths.length,
-      itemBuilder: (context, index) {
-        return _buildPolaroidGridItem(index);
-      },
     );
   }
 
   Widget _buildPolaroidGridItem(int index) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.25),
-            blurRadius: 8,
-            offset: const Offset(2, 4),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(8),
+    return GlassContainer(
+      shape: const LiquidRoundedSuperellipse(borderRadius: 16),
       child: Column(
         children: [
           // Square cropped photo
@@ -495,30 +761,39 @@ class _MainConfigPageState extends State<MainConfigPage> {
             child: Stack(
               children: [
                 Positioned.fill(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
-                    child: Image.file(
-                      File(_imagePaths[index]),
-                      fit: BoxFit.cover,
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.file(
+                        File(_imagePaths[index]),
+                        fit: BoxFit.cover,
+                      ),
                     ),
                   ),
                 ),
-                // Premium delete ribbon/overlay
+                // Delete button
                 Positioned(
-                  top: 4,
-                  right: 4,
+                  top: 8,
+                  right: 8,
                   child: GestureDetector(
                     onTap: () => _removeImage(index),
                     child: Container(
                       padding: const EdgeInsets.all(5),
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFFF4B72),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF4B72).withOpacity(0.9),
                         shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.3),
+                            blurRadius: 6,
+                          ),
+                        ],
                       ),
                       child: const Icon(
-                        Icons.delete_rounded,
+                        Icons.close_rounded,
                         color: Colors.white,
-                        size: 16,
+                        size: 14,
                       ),
                     ),
                   ),
@@ -526,56 +801,14 @@ class _MainConfigPageState extends State<MainConfigPage> {
               ],
             ),
           ),
-          const SizedBox(height: 8),
-          // Heart bottom bar to look exactly like a Polaroid
-          Container(
-            height: 16,
-            alignment: Alignment.center,
-            child: const Icon(
-              Icons.favorite_rounded,
-              color: Color(0xFFFF6B8B),
-              size: 14,
+          // Heart / Emoji bottom
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6, top: 2),
+            child: Text(
+              _polaroidEmoji.isNotEmpty ? _polaroidEmoji : '❤️',
+              style: const TextStyle(fontSize: 14),
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildBottomActions() {
-    return Container(
-      color: const Color(0xFF0F0B1E),
-      padding: const EdgeInsets.only(left: 16, right: 16, bottom: 20, top: 12),
-      child: Row(
-        children: [
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: _launchWallpaperChooser,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF1E1735),
-                foregroundColor: const Color(0xFFFFD166),
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                elevation: 4,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  side: BorderSide(
-                    color: const Color(0xFFFFD166).withOpacity(0.4),
-                    width: 1,
-                  ),
-                ),
-              ),
-              icon: const Icon(Icons.wallpaper_rounded, color: Color(0xFFFFD166)),
-              label: const Text(
-                'Aplicar Fondo de Pantalla 💖',
-                style: TextStyle(
-                  fontWeight: FontWeight.w800,
-                  fontSize: 15,
-                  letterSpacing: 0.2,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 140), // Room for FAB
         ],
       ),
     );
